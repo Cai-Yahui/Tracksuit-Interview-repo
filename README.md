@@ -21,12 +21,12 @@ The project compares multiple approaches, including:
 
 tracksuit-survey-optimisation/
 │
-├── README.md <- This file
+├── README.md                         <- This file
 ├── data/
-│ └── fake_category_data.csv <- Example survey category data
+│   └── fake_category_data.csv        <- Example survey category data
 ├── report/
-│ ├── survey_optimisation.Rmd <- R Markdown source
-│ └── survey_optimisation.html <- Rendered HTML report
+│   ├── survey_optimisation.Rmd       <- R Markdown source
+│   └── survey_optimisation.html      <- Rendered HTML report
 
 ## How to Use
 

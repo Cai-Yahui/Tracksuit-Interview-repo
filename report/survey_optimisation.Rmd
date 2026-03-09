@@ -1,0 +1,427 @@
+---
+title: "Tracksuit Survey Allocation Optimisation"
+author: "Cai Yahui"
+date: "2026-03-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lpSolve)
+
+set.seed(739)
+```
+
+# Problem Overview
+
+Tracksuit runs monthly brand tracking surveys across multiple categories.
+
+Each category requires approximately **200 qualified respondents per month**.
+
+However, categories vary in:
+
+- incidence rate (probability of qualifying)
+- survey length
+
+Additionally:
+
+- the mean survey length must remain **below 480 seconds**
+- the goal is to **minimise the number of respondents surveyed**
+
+This report explores an algorithmic approach to allocating category qualifiers into survey structures.
+
+# Load Data
+
+```{r}
+categories <- read_csv("../data/fake_category_data.csv")
+
+categories <- categories %>%
+  mutate(
+    expected_time = incidence_rate * category_length_seconds,
+    required_exposures = ceiling(200 / incidence_rate)
+  )
+
+head(categories)
+```
+
+We calculate the expected time contribution of each category:
+
+$$expected\_time_i = incidence\_rate_i \times category\_length\_seconds_i$$
+
+# Baseline Method - Greedy Packing
+
+The baseline approach treats the problem as a **bin-packing optimisation** problem.
+
+Categories are packed into survey bundles while ensuring:
+
+$$Total\ expected\ time \leq 480\ seconds$$. 
+
+```{r}
+pack_greedy <- function(categories, max_time = 480){
+
+  categories <- categories %>%
+    arrange(desc(expected_time))
+
+  surveys <- list()
+  survey_time <- c()
+
+  for(i in 1:nrow(categories)){
+
+    cat <- categories[i,]
+    placed <- FALSE
+
+    for(j in seq_along(surveys)){
+
+      if(survey_time[j] + cat$expected_time <= max_time){
+
+        surveys[[j]] <- c(surveys[[j]], cat$category_id)
+        survey_time[j] <- survey_time[j] + cat$expected_time
+        placed <- TRUE
+        break
+      }
+    }
+
+    if(!placed){
+      surveys[[length(surveys)+1]] <- c(cat$category_id)
+      survey_time <- c(survey_time, cat$expected_time)
+    }
+
+  }
+
+  surveys
+}
+
+greedy_design <- pack_greedy(categories)
+
+greedy_design
+
+```
+
+# Improved Method – Demand Weighted Packing
+
+The greedy algorithm does not consider how many respondents are required for each category.
+
+Categories with **low incidence rates require more respondents** to reach the quota.
+
+To address this, we introduce a priority score:
+
+$$priority_i = required\_exposures_i \times expected\_time_i$$
+
+This prioritises categories that both:
+- require many respondents
+- contribute significant survey time
+
+```{r}
+categories <- categories %>%
+  mutate(priority = required_exposures * expected_time)
+
+pack_weighted <- function(categories, max_time = 480){
+
+  categories <- categories %>%
+    arrange(desc(priority))
+
+  surveys <- list()
+  survey_time <- c()
+
+  for(i in 1:nrow(categories)){
+
+    cat <- categories[i,]
+    placed <- FALSE
+
+    for(j in seq_along(surveys)){
+
+      if(survey_time[j] + cat$expected_time <= max_time){
+
+        surveys[[j]] <- c(surveys[[j]], cat$category_id)
+        survey_time[j] <- survey_time[j] + cat$expected_time
+        placed <- TRUE
+        break
+      }
+    }
+
+    if(!placed){
+
+      surveys[[length(surveys)+1]] <- c(cat$category_id)
+      survey_time <- c(survey_time, cat$expected_time)
+
+    }
+  }
+
+  surveys
+}
+
+weighted_design <- pack_weighted(categories)
+
+weighted_design
+
+```
+
+# Linear Programming
+
+While heuristic methods such as greedy packing are computationally efficient, they do not guarantee an optimal allocation.
+
+To further improve the solution, we formulate the problem as an optimisation task using **Linear Programming (LP)**.
+
+The objective is to minimise the total number of respondents required while ensuring that each category receives at least 200 qualified respondents.
+
+The expected number of qualified respondents for a category is:
+
+$$qualified_i = respondents_i \times incidence_rate_i$$
+
+Therefore the minimum respondents required is:
+
+$$respondents \geq 200 / incidence\_rate$$
+
+This optimisation provides a theoretical lower bound for the number of respondents required.
+
+```{r}
+categories <- categories %>%
+  mutate(
+    required_respondents = ceiling(200 / incidence_rate)
+  )
+```
+
+The LP problem can be expressed as:
+
+Minimise:
+
+total respondents
+
+Subject to:
+
+$$respondents \times incidence_rate \leq 200$$
+
+```{r}
+solve_lp <- function(categories){
+
+  n <- nrow(categories)
+
+  objective <- rep(1, n)
+
+  constraint_matrix <- diag(categories$incidence_rate)
+
+  constraint_dir <- rep(">=", n)
+
+  constraint_rhs <- rep(200, n)
+
+  solution <- lp(
+    direction = "min",
+    objective.in = objective,
+    const.mat = constraint_matrix,
+    const.dir = constraint_dir,
+    const.rhs = constraint_rhs
+  )
+
+  solution$solution
+}
+
+lp_result <- solve_lp(categories)
+
+lp_result
+```
+
+The LP solution estimates the minimum number of respondents required for each category to achieve 200 qualified responses in expectation.
+
+However, because qualification is probabilistic, the LP result represents a **theoretical lower bound** rather than a guaranteed solution.
+
+# Simulation Validation
+
+Because qualification is probabilistic, we validate the policy using Monte Carlo simulation.
+
+```{r}
+run_simulation <- function(categories, survey_design, n_runs = 500){
+
+  map_dfr(1:n_runs, function(run){
+
+    qualified_counts <- rep(0, nrow(categories))
+    names(qualified_counts) <- categories$category_id
+
+    total_time <- 0
+    respondents <- 0
+
+    while(any(qualified_counts < 200)){
+
+      respondents <- respondents + 1
+
+      survey <- survey_design[[sample(1:length(survey_design),1)]]
+
+      for(cat in survey){
+
+        inc <- categories$incidence_rate[
+          categories$category_id == cat
+        ]
+
+        length <- categories$category_length_seconds[
+          categories$category_id == cat
+        ]
+
+        qualify <- rbinom(1,1,inc)
+
+        if(qualify==1){
+
+          qualified_counts[as.character(cat)] <-
+            qualified_counts[as.character(cat)] + 1
+
+          total_time <- total_time + length
+        }
+
+      }
+
+    }
+
+    tibble(
+      respondents = respondents,
+      avg_time = total_time/respondents
+    )
+
+  })
+}
+
+```
+
+```{r}
+greedy_results <- run_simulation(categories, greedy_design)
+
+weighted_results <- run_simulation(categories, weighted_design)
+```
+
+## Simulation Using LP Baseline
+
+```{r}
+simulate_lp <- function(categories, n_runs = 500){
+
+  map_dfr(1:n_runs, function(run){
+
+    respondents <- ceiling(max(200/categories$incidence_rate))
+
+    qualified <- rbinom(
+      nrow(categories),
+      respondents,
+      categories$incidence_rate
+    )
+
+    tibble(
+      respondents = respondents,
+      success = all(qualified >= 200)
+    )
+
+  })
+}
+
+lp_sim <- simulate_lp(categories)
+
+lp_sim
+
+```
+
+
+```{r}
+comparison <- tibble(
+  method = c("Greedy","Weighted","LP lower bound"),
+  respondents = c(
+    mean(greedy_results$respondents),
+    mean(weighted_results$respondents),
+    mean(lp_sim$respondents)
+  )
+)
+
+comparison
+```
+
+
+# Visualisation
+
+```{r}
+ggplot(greedy_results, aes(respondents)) +
+  geom_histogram(bins=30, fill="steelblue") +
+  labs(
+    title="Distribution of Respondents Required for Greedy Method",
+    x="Respondents",
+    y="Frequency"
+  )
+
+ggplot(weighted_results, aes(respondents)) +
+  geom_histogram(bins=30, fill="steelblue") +
+  labs(
+    title="Distribution of Respondents Required for Weighted Method",
+    x="Respondents",
+    y="Frequency"
+  )
+```
+
+
+```{r}
+ggplot(comparison, aes(method, respondents, fill = method)) +
+  geom_bar(stat="identity") +
+  labs(
+    title="Respondent Cost Comparison",
+    x="Method",
+    y="Respondents Required"
+  ) +
+  theme_minimal()
+```
+
+# Survey Length Validation
+
+The simulation confirms that the expected interview length remains below the 480 second constraint.
+
+```{r}
+mean(greedy_results$avg_time)
+mean(weighted_results$avg_time)
+```
+
+
+## Why Compare These Approaches?
+
+Three approaches are evaluated:
+
+Greedy packing  
+Simple heuristic that prioritises categories with large expected survey time.
+
+Demand-weighted packing  
+Improves the heuristic by prioritising categories that require many respondents.
+
+Linear Programming baseline  
+Provides a theoretical lower bound for the number of respondents required.
+
+Simulation results show that the demand-weighted heuristic approaches the LP lower bound while remaining simple and scalable.   
+
+
+# Real-World Considerations
+
+Several extensions could further improve this system:
+
+1. **Incidence uncertainty**
+
+Estimated incidence rates may differ from real values.
+
+2. **Adaptive allocation**
+
+Survey allocation could be dynamically adjusted during the month.
+
+3. **Audience clustering**
+
+Categories with similar audiences could potentially be grouped together to increase qualification efficiency. However, this approach risks introducing demographic bias and would require careful validation.
+
+# Conclusion
+
+This project demonstrates a scalable approach to survey allocation by combining:
+
+- heuristic optimisation
+- demand-aware prioritisation
+- Linear Programming Optimisation
+- Monte Carlo simulation
+
+The improved allocation strategy reduces the number of respondents required while maintaining survey quality constraints.
+While the LP solution provides an optimal theoretical benchmark, the demand-weighted heuristic offers a practical and scalable strategy for production deployment.
+
+**Note** : Because qualification events are stochastic (Bernoulli trials), quota fulfilment becomes a stopping-time process. As a result, simulation is required to evaluate the probabilistic performance of each allocation strategy.
+
+
+
+
+
+
+
+

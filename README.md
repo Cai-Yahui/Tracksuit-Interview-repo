@@ -1,7 +1,6 @@
 # Tracksuit Survey Allocation Optimisation
 
-**Author:** Yahui Cai  
-**Date:** `r Sys.Date()`  
+**Author:** Yahui Cai   
 
 ## Overview
 

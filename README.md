@@ -19,6 +19,7 @@ The project compares multiple approaches, including:
 
 ## Project Structure
 
+```
 tracksuit-survey-optimisation/
 │
 ├── README.md                         <- This file
@@ -27,6 +28,7 @@ tracksuit-survey-optimisation/
 ├── report/
 │   ├── survey_optimisation.Rmd       <- R Markdown source
 │   └── survey_optimisation.html      <- Rendered HTML report
+```
 
 ## How to Use
 
